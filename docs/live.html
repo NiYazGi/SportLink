@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SportLink — Табло</title>
+<style>
+  :root{
+    --bg:#0B0B0C; --card:#161618; --line:#242427;
+    --text:#FFFFFF; --muted:#8A8A8E; --accent:#FF6A2B; --live:#FF3B30; --win:#34C759;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg); color:var(--text); overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    display:flex; flex-direction:column; height:100vh;
+  }
+  header{
+    display:flex; align-items:center; justify-content:center; gap:2vw;
+    padding:2.2vh 3vw 1.4vh; flex:0 0 auto;
+  }
+  header .brand{font-weight:800; font-size:2.4vh; letter-spacing:.02em}
+  header .brand span{color:var(--accent)}
+  header .tname{font-size:2.4vh; font-weight:600; color:var(--muted)}
+  .live-pill{
+    display:none; align-items:center; gap:.7vw; color:var(--live);
+    font-weight:800; font-size:2vh; letter-spacing:.08em;
+  }
+  .live-pill.on{display:inline-flex}
+  .dot{width:1.3vh;height:1.3vh;border-radius:50%;background:var(--live);animation:pulse 1s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+
+  main{flex:1 1 auto; display:flex; align-items:center; justify-content:center; padding:0 3vw}
+  .board{display:flex; align-items:stretch; justify-content:center; gap:3vw; width:100%; max-width:1600px}
+  .team{
+    flex:1 1 0; background:var(--card); border:1px solid var(--line); border-radius:24px;
+    padding:3vh 2vw; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2vh;
+    min-width:0;
+  }
+  .team.lead{border-color:var(--accent)}
+  .team .name{
+    font-size:clamp(20px,3.6vw,58px); font-weight:800; text-align:center;
+    max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .team .score{font-size:clamp(90px,20vw,340px); font-weight:900; line-height:.9; color:var(--accent); font-variant-numeric:tabular-nums}
+  .vs{align-self:center; font-size:6vh; font-weight:800; color:var(--muted)}
+  .empty{color:var(--muted); font-size:3.4vh; text-align:center}
+
+  footer{flex:0 0 auto; padding:1.4vh 3vw 2.4vh; overflow:hidden}
+  .strip{display:flex; gap:1.2vw; justify-content:center; flex-wrap:wrap; max-height:12vh; overflow:hidden}
+  .mini{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:1vh 1.4vw; font-size:1.9vh; display:flex; align-items:center; gap:1vw; color:var(--muted);
+  }
+  .mini b{color:var(--text); font-weight:700}
+  .mini .sc{color:var(--accent); font-weight:800; font-variant-numeric:tabular-nums}
+  .mini.done{opacity:.55}
+  .tag{font-size:1.5vh; color:var(--muted)}
+</style>
+</head>
+<body>
+  <header>
+    <div class="brand">Sport<span>Link</span></div>
+    <div class="tname" id="tname">…</div>
+    <div class="live-pill" id="live"><span class="dot"></span>LIVE</div>
+  </header>
+  <main><div id="board" class="board"><div class="empty">Загрузка…</div></div></main>
+  <footer><div class="strip" id="strip"></div></footer>
+
+<script type="module">
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+
+const SUPABASE_URL = 'https://rkgkkgcnzykjuzizhfvy.supabase.co'
+const SUPABASE_ANON = 'eyJhbGci••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••'
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON)
+
+const tournamentId = new URLSearchParams(location.search).get('t')
+const $ = (id) => document.getElementById(id)
+const esc = (s) => (s ?? '—').toString().replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))
+
+async function render() {
+  if (!tournamentId) { $('board').innerHTML = '<div class="empty">Не указан турнир (?t=…)</div>'; return }
+
+  const { data: trow } = await supabase.from('tournaments').select('name').eq('id', tournamentId).single()
+  $('tname').textContent = trow?.name ?? ''
+
+  const { data: matches, error } = await supabase
+    .from('tournament_matches')
+    .select('*, home:teams!home_team_id(name), away:teams!away_team_id(name)')
+    .eq('tournament_id', tournamentId)
+    .order('round', { ascending: true }).order('slot', { ascending: true })
+
+  if (error || !matches || matches.length === 0) {
+    $('board').innerHTML = '<div class="empty">Матчей пока нет</div>'; $('strip').innerHTML=''; return
+  }
+
+  // выбираем «главный» матч: идёт → следующий несыгранный → последний сыгранный
+  const live = matches.find(m => m.status === 'live')
+  const next = matches.find(m => m.status !== 'done' && m.away_team_id)
+  const lastDone = [...matches].reverse().find(m => m.status === 'done')
+  const cur = live || next || lastDone || matches[0]
+
+  $('live').classList.toggle('on', cur?.status === 'live')
+
+  const hs = cur.home_score ?? 0, as = cur.away_score ?? 0
+  const homeLead = cur.status !== 'done' ? hs > as : cur.winner_team_id && cur.winner_team_id === cur.home_team_id
+  const awayLead = cur.status !== 'done' ? as > hs : cur.winner_team_id && cur.winner_team_id === cur.away_team_id
+  $('board').innerHTML = `
+    <div class="team ${homeLead?'lead':''}">
+      <div class="name">${esc(cur.home?.name)}</div>
+      <div class="score">${hs}</div>
+    </div>
+    <div class="vs">:</div>
+    <div class="team ${awayLead?'lead':''}">
+      <div class="name">${esc(cur.away?.name)}</div>
+      <div class="score">${as}</div>
+    </div>`
+
+  // нижняя лента: остальные матчи (кроме текущего)
+  $('strip').innerHTML = matches.filter(m => m.id !== cur.id && m.away_team_id).slice(0, 8).map(m => {
+    const done = m.status === 'done'
+    const grp = m.group_label ? `<span class="tag">Гр. ${esc(m.group_label)}</span>` : ''
+    const sc = (m.home_score != null && m.away_score != null) ? `<span class="sc">${m.home_score}:${m.away_score}</span>` : '<span class="tag">—</span>'
+    return `<div class="mini ${done?'done':''}">${grp}<b>${esc(m.home?.name)}</b> ${sc} <b>${esc(m.away?.name)}</b></div>`
+  }).join('')
+}
+
+// живое обновление
+supabase.channel('scoreboard')
+  .on('postgres_changes',
+      { event: '*', schema: 'public', table: 'tournament_matches', filter: `tournament_id=eq.${tournamentId}` },
+      render)
+  .subscribe()
+
+render()
+setInterval(render, 15000) // страховочный поллинг, если realtime отвалится
+</script>
+</body>
+</html>
